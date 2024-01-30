@@ -9,24 +9,15 @@ import org.apache.spark.api.java.JavaRDD;
 import org.apache.spark.api.java.JavaSparkContext;
 import scala.Tuple2;
 
-import java.io.File;
+import java.io.*;
 import java.util.*;
 
 public class Main {
 
     public static void main(String[] args) {
-        String inputPath = "data";//args[0];
+        String inputPath = args[0];
         int k=31;//Integer.parseInt(args[1]);
-        int nBin=120;
-
-        File directory = new File(inputPath);
-        Hashtable<String,Integer> file_table=new Hashtable<>(2);
-        int file_idx=0;
-        for (String fileName : directory.list()){
-            file_table.put(fileName,file_idx);
-            file_idx+=1;
-        }
-
+        int nBin=Integer.parseInt(args[1]);
 
         Logger.getLogger("org").setLevel(Level.ERROR);
         Logger.getLogger("akka").setLevel(Level.ERROR);
@@ -36,16 +27,46 @@ public class Main {
         Configuration inputConf = jsc.hadoopConfiguration();
         inputConf.setInt("look_ahead_buffer_size", 2048);
 
-        //Loading Samples into Memory Using Fastdoop
-        JavaPairRDD<Integer, byte[]> samples = jsc.newAPIHadoopFile(inputPath,
-                FASTAshortInputFileFormat.class, Text.class, fastdoop.Record.class, inputConf)
-                .values()
-                .mapToPair(record -> new Tuple2<>(file_table.get(record.getFileName()), record.getValue().getBytes()));
+        File directory = new File(inputPath);
+        String[] files_names=directory.list();
+        System.out.println(files_names.length);
 
+        List<String> files_list=new ArrayList<>(files_names.length);
+        for(String s:files_names){
+            System.out.println(s);
+            files_list.add(inputPath+"/"+s);
+        }
 
-        JavaPairRDD<Integer, Hashtable<Long,Long>> edges=samples
-                .mapPartitions(new BinsExtractorFromPartition(k,nBin))
-                .mapToPair(t->new Tuple2<>(t._1,t._2))
+        JavaPairRDD<Integer, Hashtable<Long,Long>> edgesRDD = jsc.parallelize(files_list)
+                .flatMapToPair(path -> {
+                    BufferedReader br = new BufferedReader(new FileReader(path));
+                    Long kmer;
+                    int len;
+                    Hashtable<Long, Long>[] frequencies = new Hashtable[nBin];
+                    KmerTool ktool;
+                    String read;
+
+                    
+                    while ((read = br.readLine()) != null) {
+                        if (read.startsWith(">"))
+                            continue;
+                        len=read.length();
+                        ktool = new KmerTool(read.getBytes(), k);
+                        for (int i = 0; i < len - (k-1); i++) {
+                            kmer = ktool.nextKmerCan();
+                            int idBin = Math.abs(Long.hashCode(kmer) % nBin);
+                            if (frequencies[idBin] == null)
+                                frequencies[idBin] = new Hashtable<>();
+                            frequencies[idBin].merge(kmer, 1l, Long::sum);
+                        }
+                    }
+
+                    List<Tuple2<Integer, Hashtable<Long, Long>>> kmers = new ArrayList<>();
+                    for (int idBin = 0; idBin < nBin; idBin++)
+                        if (frequencies[idBin] != null)
+                            kmers.add(new Tuple2<>(idBin,frequencies[idBin]));
+                    return kmers.iterator();
+                })
                 .groupByKey()
                 .mapToPair(t->{
                     Iterator<Hashtable<Long, Long>> iter = t._2.iterator();
@@ -62,6 +83,7 @@ public class Main {
                     return new Tuple2<>(t._1,bin_frequencies);
                 });
 
-        System.out.println(edges.count());
+        System.out.println(edgesRDD.count());
+
     }
 }
