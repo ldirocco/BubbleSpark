@@ -35,7 +35,7 @@ shadowJar {
 repositories {
     mavenCentral()
     maven {
-        url 'https://repos.spark-packages.org/'
+        url 'https://dl.bintray.com/spark-packages/maven/'
     }
     maven { url 'https://jitpack.io' }
 }
